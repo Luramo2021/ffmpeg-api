@@ -10,71 +10,78 @@ const app = express();
 const TMP = '/tmp';
 
 app.get('/', (req, res) => {
-  res.send('FFmpeg API is up — POST /render with fields "data" (image) and "audio.aac" (audio)');
+  res.send('FFmpeg API is up — POST /render with fields "data" (image) and "audio.aac" (audio.aac)');
 });
 
 app.post(
   '/render',
   upload.fields([
-    { name: 'data', maxCount: 1 },       // your image binary field
-    { name: 'audio.aac', maxCount: 1 },  // your audio binary field
+    { name: 'data', maxCount: 1 },
+    { name: 'audio.aac', maxCount: 1 },
   ]),
   (req, res) => {
     console.log('--- /render called ---');
-    console.log('Files received keys:', Object.keys(req.files));
-    console.log('Image file info (data):', req.files['data']?.[0]);
-    console.log('Audio file info (audio.aac):', req.files['audio.aac']?.[0]);
+    // Vérification rapide
+    if (!req.files['data'] || !req.files['audio.aac']) {
+      return res.status(400).send('Expecting two fields: data (image) + audio.aac (audio)');
+    }
 
-    try {
-      // Determine extensions from original filenames
-      const imgFile = req.files['data'][0];
-      const audFile = req.files['audio.aac'][0];
-      const imgExt = path.extname(imgFile.originalname) || '.jpg';
-      const audExt = path.extname(audFile.originalname) || '.aac';
+    const imgFile = req.files['data'][0];
+    const audFile = req.files['audio.aac'][0];
 
-      const imgPath = path.join(TMP, `image${imgExt}`);
-      const audPath = path.join(TMP, `audio${audExt}`);
-      const outPath = path.join(TMP, 'output.mp4');
+    // Préparer les chemins/disques
+    const imgExt  = path.extname(imgFile.originalname) || '.jpg';
+    const audExt  = path.extname(audFile.originalname) || '.aac';
+    const imgPath = path.join(TMP, `image${imgExt}`);
+    const audPath = path.join(TMP, `audio${audExt}`);
+    const outPath = path.join(TMP, 'output.mp4');
 
-      console.log(`Writing image to ${imgPath}`);
-      fs.writeFileSync(imgPath, imgFile.buffer);
+    // Écrire les buffers
+    fs.writeFileSync(imgPath, imgFile.buffer);
+    fs.writeFileSync(audPath, audFile.buffer);
+    console.log('Wrote image & audio to temp files');
 
-      console.log(`Writing audio to ${audPath}`);
-      fs.writeFileSync(audPath, audFile.buffer);
+    // 1) On récupère la durée de l’audio
+    ffmpeg.ffprobe(audPath, (err, metadata) => {
+      if (err) {
+        console.error('ffprobe error:', err);
+        return res.status(500).send('ffprobe failed: ' + err.message);
+      }
 
-      console.log('Starting FFmpeg processing...');
+      const duration = metadata.format.duration;
+      console.log('Audio duration (s):', duration);
+
+      // 2) On lance FFmpeg en boucle image sur toute cette durée
       ffmpeg()
-        .input(imgPath).loop(1)
+        .input(imgPath)
+        .loop(duration)              // boucle sur TOUTE la durée audio
         .input(audPath)
         .outputOptions([
           '-c:v libx264',
           '-tune stillimage',
           '-c:a aac',
           '-b:a 192k',
-          '-pix_fmt yuv420p',
-          '-shortest',
+          '-pix_fmt yuv420p'
         ])
+        .duration(duration)          // assure la bonne durée
         .on('start', cmd => console.log('FFmpeg cmd:', cmd))
         .on('stderr', line => console.error('FFmpeg stderr:', line))
         .on('end', () => {
-          console.log('FFmpeg done, sending file');
+          console.log('Rendering done, sending file');
           res.sendFile(outPath, () => {
-            console.log('Cleaning up temp files');
+            // Nettoyage
             [imgPath, audPath, outPath].forEach(f => {
               try { fs.unlinkSync(f); console.log('Deleted', f); }
-              catch (err) { console.warn('Cleanup failed for', f, err); }
+              catch {}
             });
           });
         })
         .on('error', err => {
           console.error('FFmpeg error:', err);
-          res.status(500).send(`FFmpeg processing error: ${err.message}`);
+          res.status(500).send('FFmpeg failed: ' + err.message);
         })
         .save(outPath);
-    } catch (e) {
-      console.error('/render catch:', e);
-      res.status(500).send(`Server error: ${e.message}`);
-    }
+    });
   }
 );
 
