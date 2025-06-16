@@ -9,11 +9,16 @@ const ffmpeg  = require('fluent-ffmpeg');
 const app = express();
 const TMP = '/tmp';
 
+app.get('/', (req, res) => {
+  res.send('FFmpeg API is up — POST /render with image & audio files');
+});
+
 app.post('/render', upload.any(), (req, res) => {
   console.log('--- /render called ---');
-  console.log('Fields received:', req.files.map(f => f.fieldname, f.mimetype));
+  // Affichage correct des fichiers reçus
+  console.log('Fields received:', req.files.map(f => `${f.fieldname} (${f.mimetype})`));
 
-  // Trouver le fichier image & audio
+  // Sélectionne image & audio par mimetype
   const imgFile = req.files.find(f => f.mimetype.startsWith('image/'));
   const audFile = req.files.find(f => f.mimetype.startsWith('audio/'));
 
@@ -21,29 +26,29 @@ app.post('/render', upload.any(), (req, res) => {
     return res.status(400).send('Besoin d’un fichier image et d’un fichier audio.');
   }
 
-  // Déduire les extensions
-  const imgExt  = path.extname(imgFile.originalname) || '.jpg';
-  const audExt  = path.extname(audFile.originalname) || '.aac';
+  // Déduire et garder l’extension d’origine
+  const imgExt = path.extname(imgFile.originalname) || '.jpg';
+  const audExt = path.extname(audFile.originalname) || '.aac';
 
-  const imgPath  = path.join(TMP, `image${imgExt}`);
-  const audPath  = path.join(TMP, `audio${audExt}`);
-  const outPath  = path.join(TMP, 'output.mp4');
+  const imgPath = path.join(TMP, `image${imgExt}`);
+  const audPath = path.join(TMP, `audio${audExt}`);
+  const outPath = path.join(TMP, 'output.mp4');
 
-  // Écrire sur le disque
+  // Écrire les buffers sur disque
   fs.writeFileSync(imgPath, imgFile.buffer);
   fs.writeFileSync(audPath, audFile.buffer);
-  console.log(`Wrote files: ${imgPath}, ${audPath}`);
+  console.log(`Wrote files to ${imgPath} & ${audPath}`);
 
   // Récupérer la durée de l’audio
-  ffmpeg.ffprobe(audPath, (err, meta) => {
+  ffmpeg.ffprobe(audPath, (err, metadata) => {
     if (err) {
       console.error('ffprobe error:', err);
       return res.status(500).send('ffprobe failed: ' + err.message);
     }
-    const duration = meta.format.duration;
-    console.log('Audio duration:', duration, 's');
+    const duration = metadata.format.duration;
+    console.log('Audio duration (s):', duration);
 
-    // Générer la vidéo
+    // Générer la vidéo en loopant l’image sur toute la durée
     ffmpeg()
       .input(imgPath).loop(duration)
       .input(audPath)
@@ -58,9 +63,9 @@ app.post('/render', upload.any(), (req, res) => {
       .on('start', cmd => console.log('FFmpeg cmd:', cmd))
       .on('stderr', line => console.error('FFmpeg stderr:', line))
       .on('end', () => {
-        console.log('Rendering done, sending file');
+        console.log('Rendering complete, sending file');
         res.sendFile(outPath, () => {
-          // Cleanup
+          // Nettoyage
           [imgPath, audPath, outPath].forEach(f => {
             try { fs.unlinkSync(f); console.log('Deleted', f); }
             catch {}
