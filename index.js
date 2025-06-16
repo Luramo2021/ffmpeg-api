@@ -1,23 +1,40 @@
-const express = require("express");
-const { exec } = require("child_process");
+const express = require('express');
+const multer  = require('multer');
+const upload = multer();
+const fs      = require('fs');
+const path    = require('path');
+const ffmpeg  = require('fluent-ffmpeg');
+
 const app = express();
-app.use(express.json());
+const TMP = '/tmp';
 
-app.post("/generate", (req, res) => {
-  const { imageUrl, audioUrl, fileName } = req.body;
-
-  const output = `${fileName || "output"}.mp4`;
-
-  const command = `ffmpeg -y -loop 1 -i "${imageUrl}" -i "${audioUrl}" -c:v libx264 -t 11 -pix_fmt yuv420p -c:a aac -shortest public/${output}`;
-
-  exec(command, (err) => {
-    if (err) return res.status(500).send(err.message);
-    return res.json({ videoUrl: `https://${req.hostname}/public/${output}` });
-  });
+app.post('/render', upload.fields([
+  { name: 'audio' }, { name: 'image' }
+]), (req, res) => {
+  try {
+    const aac = path.join(TMP,'audio.aac');
+    const img = path.join(TMP,'image.jpg');
+    const out = path.join(TMP,'output.mp4');
+    fs.writeFileSync(aac, req.files.audio[0].buffer);
+    fs.writeFileSync(img, req.files.image[0].buffer);
+    ffmpeg()
+      .input(img).loop(1)
+      .input(aac)
+      .outputOptions([
+        '-c:v libx264','-tune stillimage',
+        '-c:a aac','-b:a 192k','-pix_fmt yuv420p','-shortest'
+      ])
+      .save(out)
+      .on('end', () => {
+        res.sendFile(out, () => {
+          [aac,img,out].forEach(f=>fs.unlinkSync(f));
+        });
+      })
+      .on('error', e => res.status(500).send(e.message));
+  } catch (e) {
+    res.status(500).send(e.toString());
+  }
 });
 
-app.use("/public", express.static("public"));
-
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
-});
+const PORT = process.env.PORT||3000;
+app.listen(PORT, ()=>console.log(`Listening ${PORT}`));
